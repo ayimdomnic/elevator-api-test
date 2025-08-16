@@ -56,8 +56,8 @@ Docs UI available at `/docs`.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourrepo/elevator-api.git
-cd elevator-api
+git clone https://github.com/ayimdomnic/elevator-api-test.git
+cd elevator-api-test
 ```
 
 2. Set up virtual environment:

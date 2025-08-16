@@ -51,6 +51,7 @@ Docs UI available at `/docs`.
 |---------------------|--------|----------------------------|
 | `/health/health`    | GET    | Service health check       |
 | `/health/metrics`   | GET    | System performance metrics |
+| `/metrics`          | GET    | Prometheus metrics endpoint |
 
 ## Installation
 

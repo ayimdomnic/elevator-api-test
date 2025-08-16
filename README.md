@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/ayimdomnic/elevator-api-test/actions/workflows/ci.yml/badge.svg)
 
-A production-ready REST API for intelligent, concurrent elevator management and real-time monitoring. Built for the Beem Tech Challenge with senior-level engineering practices: test coverage, observability, clear docs, and containerized setup.
+A production-ready REST API for intelligent, concurrent elevator management and real-time monitoring. Built for the Beem Tech Challenge with modern engineering practices: test coverage, observability, clear docs, and containerized setup.
 
 ## Table of Contents
 - [Features](#features)

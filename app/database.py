@@ -43,6 +43,7 @@ class Database:
         elevators_table = f"elevators{self._table_suffix}"
         logs_table = f"logs{self._table_suffix}"
         sql_table = f"sql_queries{self._table_suffix}"
+        idem_table = f"idempotency_keys{self._table_suffix}"
 
         conn = self.pool.getconn()
         try:
@@ -85,7 +86,16 @@ class Database:
                         execution_time_ms FLOAT,
                         error TEXT,
                         timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                    )
+                    );
+                    CREATE TABLE IF NOT EXISTS {idem_table} (
+                        key TEXT PRIMARY KEY,
+                        endpoint TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        request_hash TEXT NOT NULL,
+                        response TEXT,
+                        status_code INTEGER,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
                     """
                 )
             conn.commit()
@@ -237,6 +247,40 @@ class Database:
                     ) VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (elevator_id, event_type, details, source, severity, datetime.now())
+                )
+
+    def get_idempotency(self, key: str) -> Optional[Dict[str, Any]]:
+        """Fetch idempotency record by key, if present."""
+        idem_table = f"idempotency_keys{self._table_suffix}"
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT key, endpoint, method, request_hash, response, status_code, created_at FROM {idem_table} WHERE key = %s",
+                    (key,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                cols = [desc[0] for desc in cursor.description]
+                return dict(zip(cols, row))
+
+    def put_idempotency(self, key: str, endpoint: str, method: str, request_hash: str, response: str, status_code: int) -> None:
+        """Store or upsert an idempotency record."""
+        idem_table = f"idempotency_keys{self._table_suffix}"
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {idem_table} (key, endpoint, method, request_hash, response, status_code)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        endpoint = EXCLUDED.endpoint,
+                        method = EXCLUDED.method,
+                        request_hash = EXCLUDED.request_hash,
+                        response = EXCLUDED.response,
+                        status_code = EXCLUDED.status_code
+                    """,
+                    (key, endpoint, method, request_hash, response, status_code),
                 )
 
     def get_logs(self, limit: int = 100, offset: int = 0, event_type: str = None) -> List[Dict[str, Any]]:

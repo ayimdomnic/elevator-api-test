@@ -5,6 +5,8 @@ from flask import Flask, request, jsonify
 from flask_restx import Api, Resource, fields, Namespace
 from typing import List, Optional
 from datetime import datetime
+import hashlib
+import json as jsonlib
 
 from app.manager import ElevatorManager
 from app.exceptions import (
@@ -92,6 +94,19 @@ class CallElevator(Resource):
         try:
             caller_id = request.headers.get('X-Request-ID', request.remote_addr)
             idempotency_key = request.headers.get('Idempotency-Key')
+            # If idempotency key provided, check DB for an existing record
+            if idempotency_key:
+                request_hash = hashlib.sha256(
+                    f"POST:/elevator/call:{jsonlib.dumps(data, sort_keys=True)}".encode()
+                ).hexdigest()
+                record = manager.db.get_idempotency(idempotency_key)
+                if record:
+                    if record['request_hash'] == request_hash:
+                        # Return stored response
+                        stored = jsonlib.loads(record['response']) if record['response'] else {}
+                        return stored, int(record['status_code'])
+                    else:
+                        raise ElevatorAPIException("Idempotency-Key reuse with different payload", 409)
             assignment = manager.assign_elevator(
                 from_floor=from_floor,
                 to_floor=to_floor,
@@ -99,12 +114,24 @@ class CallElevator(Resource):
                 idempotency_key=idempotency_key
             )
             
-            return {
+            response_payload = {
                 "message": f"Elevator {assignment.elevator_id} assigned",
                 "elevator_id": assignment.elevator_id,
                 "task_id": assignment.task_id,
                 "estimated_arrival_time": assignment.estimated_arrival_time
-            }, 200
+            }
+            status_code = 200
+            # Persist idempotency result if key provided
+            if idempotency_key:
+                manager.db.put_idempotency(
+                    idempotency_key,
+                    "/elevator/call",
+                    "POST",
+                    request_hash,
+                    jsonlib.dumps(response_payload),
+                    status_code,
+                )
+            return response_payload, status_code
             
         except NoAvailableElevatorException as e:
             raise ElevatorAPIException(str(e), 503)

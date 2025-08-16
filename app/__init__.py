@@ -48,7 +48,7 @@ def create_app():
         # Histogram observation would need precise timing; omitted for simplicity
         return response
 
-    @app.route('/metrics')
+    @app.route('/prom/metrics')
     def metrics():
         return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
     

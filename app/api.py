@@ -63,7 +63,7 @@ task_status = api.model("TaskStatus", {
     "error": fields.String
 })
 
-# Global manager instance
+
 manager: Optional[ElevatorManager] = None
 
 def init_api(app: Flask, elevators: List, config, db) -> None:
@@ -95,12 +95,12 @@ class CallElevator(Resource):
         try:
             caller_id = request.headers.get('X-Request-ID', request.remote_addr)
             idempotency_key = request.headers.get('Idempotency-Key') or str(uuid.uuid4())
-            # Purge expired idempotency keys opportunistically (10 minutes)
+            
             try:
                 manager.db.purge_idempotency_older_than(600)
             except Exception:
                 pass
-            # If idempotency key provided, check DB for an existing record
+            
             request_hash = hashlib.sha256(
                 f"POST:/elevator/call:{jsonlib.dumps(data, sort_keys=True)}".encode()
             ).hexdigest()
@@ -131,7 +131,7 @@ class CallElevator(Resource):
                 "estimated_arrival_time": assignment.estimated_arrival_time
             }
             status_code = 200
-            # Persist idempotency result if key provided
+            
             manager.db.put_idempotency(
                 idempotency_key,
                 "/elevator/call",
@@ -140,7 +140,7 @@ class CallElevator(Resource):
                 jsonlib.dumps(response_payload),
                 status_code,
             )
-            # Return the generated key so clients can learn/propagate it
+            
             response_payload["idempotency_key"] = idempotency_key
             return response_payload, status_code, {'Idempotency-Key': idempotency_key}
             

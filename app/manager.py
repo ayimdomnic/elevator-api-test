@@ -8,6 +8,7 @@ from threading import Lock
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
+import uuid
 
 from app.elevator import Elevator, ElevatorState, Direction
 from app.exceptions import NoAvailableElevatorException, InvalidFloorException
@@ -59,8 +60,14 @@ class ElevatorManager:
                 if not elevator:
                     raise NoAvailableElevatorException()
                 
+                # Update elevator state
+                elevator.state = ElevatorState.MOVING
+                elevator.direction = Direction.UP if to_floor > from_floor else Direction.DOWN
+                elevator.destination_floor = to_floor
+                self._update_elevator_in_db(elevator)
+                
                 # Calculate ETA
-                eta = self._calculate_eta(elevator, from_floor)
+                eta = self._calculate_arrival_time(elevator, from_floor)
                 
                 # Create task
                 task_id = f"elevator_{elevator.id}_{int(datetime.now().timestamp())}"
@@ -96,6 +103,16 @@ class ElevatorManager:
                 logger.error(f"Assignment failed: {e}")
                 raise
     
+    def _update_elevator_in_db(self, elevator: Elevator):
+        """Helper method to update elevator state in database."""
+        self.db.update_elevator(
+            elevator.id,
+            elevator.current_floor,
+            elevator.state.name,
+            elevator.direction.name,
+            elevator.destination_floor
+        )
+    
     def _validate_floors(self, from_floor: int, to_floor: int) -> None:
         """Validate floor numbers."""
         max_floor = self.config.num_floors
@@ -112,32 +129,35 @@ class ElevatorManager:
             return min(idle, key=lambda e: abs(e.current_floor - from_floor))
         
         # Then check moving elevators going same direction
-        direction = "UP" if to_floor > from_floor else "DOWN"
+        direction = Direction.UP if to_floor > from_floor else Direction.DOWN
         moving = [
             e for e in self.elevators 
             if e.state == ElevatorState.MOVING 
-            and e.direction.value == direction
-            and self._can_pickup(e, from_floor)
+            and e.direction == direction
+            and self._can_pickup_on_route(e, from_floor)
         ]
         if moving:
             return min(moving, key=lambda e: abs(e.current_floor - from_floor))
         
         return None
     
-    def _can_pickup(self, elevator: Elevator, floor: int) -> bool:
+    def _can_pickup_on_route(self, elevator: Elevator, pickup_floor: int) -> bool:
         """Check if elevator can pick up on its route."""
-        if not elevator.destination_floor:
-            return False
-            
         if elevator.direction == Direction.UP:
-            return elevator.current_floor <= floor <= elevator.destination_floor
-        else:
-            return elevator.destination_floor <= floor <= elevator.current_floor
+            return elevator.current_floor <= pickup_floor <= elevator.destination_floor
+        elif elevator.direction == Direction.DOWN:
+            return elevator.destination_floor <= pickup_floor <= elevator.current_floor
+        return False
     
-    def _calculate_eta(self, elevator: Elevator, floor: int) -> float:
+    def _calculate_arrival_time(self, elevator: Elevator, pickup_floor: int) -> float:
         """Calculate estimated arrival time."""
-        floors = abs(elevator.current_floor - floor)
-        return floors * self.config.floor_move_time
+        if elevator.state == ElevatorState.IDLE:
+            return abs(elevator.current_floor - pickup_floor) * self.config.floor_move_time
+        else:
+            # Time to complete current trip + time to pickup floor
+            current_trip = abs(elevator.current_floor - elevator.destination_floor)
+            pickup_trip = abs(elevator.destination_floor - pickup_floor)
+            return (current_trip + pickup_trip) * self.config.floor_move_time
     
     async def _execute_call(self, elevator: Elevator, from_floor: int, 
                           to_floor: int, task_id: str, caller_id: str) -> None:
@@ -150,6 +170,12 @@ class ElevatorManager:
             # Move to destination
             await elevator.move_to(to_floor)
             
+            # Update state after completion
+            elevator.state = ElevatorState.IDLE
+            elevator.direction = Direction.NONE
+            elevator.destination_floor = None
+            self._update_elevator_in_db(elevator)
+            
             # Log completion
             self.db.log_event(
                 "CALL_COMPLETED",
@@ -159,6 +185,9 @@ class ElevatorManager:
             )
             
         except Exception as e:
+            # Update state on failure
+            elevator.state = ElevatorState.ERROR
+            self._update_elevator_in_db(elevator)
             logger.error(f"Call failed: {e}")
             self.db.log_event(
                 "CALL_FAILED",
@@ -183,9 +212,31 @@ class ElevatorManager:
                 "destination_floor": e.destination_floor
             })
         
+        # Determine system health
+        busy_elevators = sum(1 for e in self.elevators if e.state != ElevatorState.IDLE)
+        system_health = "BUSY" if busy_elevators == len(self.elevators) else "HEALTHY"
+        
         return {
             "elevators": elevators,
             "active_tasks": len(self._active_tasks),
             "metrics": self._metrics,
+            "system_health": system_health,
             "timestamp": datetime.now().isoformat()
         }
+    
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Get status of a specific task."""
+        future = self._active_tasks.get(task_id)
+        if not future:
+            return {"task_id": task_id, "status": "completed"}
+        
+        return {
+            "task_id": task_id,
+            "status": "running" if not future.done() else "completed",
+            "error": str(future.exception()) if future.exception() else None
+        }
+    
+    def shutdown(self):
+        """Gracefully shutdown the elevator manager."""
+        self._executor.shutdown(wait=True)
+        logger.info("Elevator manager shutdown completed")

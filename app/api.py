@@ -2,8 +2,9 @@
 REST API endpoints for the elevator system.
 """
 from flask import Flask, request, jsonify
-from flask_restx import Api, Resource, fields
+from flask_restx import Api, Resource, fields, Namespace
 from typing import List, Optional
+from datetime import datetime
 
 from app.manager import ElevatorManager
 from app.exceptions import (
@@ -12,14 +13,17 @@ from app.exceptions import (
     InvalidFloorException
 )
 
-
 api = Api(
     title="Elevator API",
     version="1.0",
-    description="API for managing building elevators"
+    description="API for managing building elevators",
+    doc="/docs"
 )
 
-elevator_ns = api.namespace("elevator", description="Elevator operations")
+elevator_ns = Namespace("elevator", description="Elevator operations")
+health_ns = Namespace("health", description="Health check operations")
+api.add_namespace(elevator_ns)
+api.add_namespace(health_ns)
 
 # Request/Response models
 call_model = api.model("CallElevator", {
@@ -30,6 +34,7 @@ call_model = api.model("CallElevator", {
 call_response = api.model("CallResponse", {
     "message": fields.String(example="Elevator assigned"),
     "elevator_id": fields.Integer(example=1),
+    "task_id": fields.String(example="task_123"),
     "estimated_arrival_time": fields.Float(example=15.0)
 })
 
@@ -44,7 +49,15 @@ elevator_status = api.model("ElevatorStatus", {
 system_status = api.model("SystemStatus", {
     "elevators": fields.List(fields.Nested(elevator_status)),
     "active_tasks": fields.Integer,
+    "metrics": fields.Raw(),
+    "system_health": fields.String,
     "timestamp": fields.String
+})
+
+task_status = api.model("TaskStatus", {
+    "task_id": fields.String,
+    "status": fields.String,
+    "error": fields.String
 })
 
 # Global manager instance
@@ -62,25 +75,33 @@ class CallElevator(Resource):
     @elevator_ns.marshal_with(call_response)
     def post(self):
         """Call an elevator to specific floors."""
-        data = request.json
-        from_floor = data["from_floor"]
-        to_floor = data["to_floor"]
+        data = request.get_json()
+        if not data:
+            raise ElevatorAPIException("Request body must be JSON", 400)
+        
+        from_floor = data.get("from_floor")
+        to_floor = data.get("to_floor")
+        
+        if from_floor is None or to_floor is None:
+            raise ElevatorAPIException("Both from_floor and to_floor are required", 400)
         
         try:
+            caller_id = request.headers.get('X-Request-ID', request.remote_addr)
             assignment = manager.assign_elevator(
-                from_floor,
-                to_floor,
-                request.remote_addr
+                from_floor=from_floor,
+                to_floor=to_floor,
+                caller_id=caller_id
             )
             
             return {
                 "message": f"Elevator {assignment.elevator_id} assigned",
                 "elevator_id": assignment.elevator_id,
+                "task_id": assignment.task_id,
                 "estimated_arrival_time": assignment.estimated_arrival_time
-            }
+            }, 200
             
-        except NoAvailableElevatorException:
-            raise ElevatorAPIException("No elevators currently available", 503)
+        except NoAvailableElevatorException as e:
+            raise ElevatorAPIException(str(e), 503)
         except InvalidFloorException as e:
             raise ElevatorAPIException(str(e), 400)
 
@@ -100,6 +121,32 @@ class SystemLogs(Resource):
         event_type = request.args.get("event_type")
         
         return manager.db.get_logs(limit, offset, event_type)
+
+@elevator_ns.route("/task/<string:task_id>")
+class TaskStatus(Resource):
+    @elevator_ns.marshal_with(task_status)
+    def get(self, task_id):
+        """Get task status."""
+        return manager.get_task_status(task_id)
+
+@health_ns.route("/health")
+class HealthCheck(Resource):
+    def get(self):
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat()
+        }, 200
+
+@health_ns.route("/metrics")
+class Metrics(Resource):
+    def get(self):
+        """System metrics endpoint."""
+        status = manager.get_system_status()
+        return {
+            "metrics": status.get("metrics", {}),
+            "timestamp": datetime.now().isoformat()
+        }, 200
 
 @api.errorhandler(ElevatorAPIException)
 def handle_error(error):

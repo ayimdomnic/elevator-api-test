@@ -7,6 +7,7 @@ from typing import List, Optional
 from datetime import datetime
 import hashlib
 import json as jsonlib
+import uuid
 
 from app.manager import ElevatorManager
 from app.exceptions import (
@@ -93,20 +94,29 @@ class CallElevator(Resource):
         
         try:
             caller_id = request.headers.get('X-Request-ID', request.remote_addr)
-            idempotency_key = request.headers.get('Idempotency-Key')
+            idempotency_key = request.headers.get('Idempotency-Key') or str(uuid.uuid4())
+            # Purge expired idempotency keys opportunistically (10 minutes)
+            try:
+                manager.db.purge_idempotency_older_than(600)
+            except Exception:
+                pass
             # If idempotency key provided, check DB for an existing record
-            if idempotency_key:
-                request_hash = hashlib.sha256(
-                    f"POST:/elevator/call:{jsonlib.dumps(data, sort_keys=True)}".encode()
-                ).hexdigest()
-                record = manager.db.get_idempotency(idempotency_key)
-                if record:
-                    if record['request_hash'] == request_hash:
-                        # Return stored response
-                        stored = jsonlib.loads(record['response']) if record['response'] else {}
-                        return stored, int(record['status_code'])
-                    else:
-                        raise ElevatorAPIException("Idempotency-Key reuse with different payload", 409)
+            request_hash = hashlib.sha256(
+                f"POST:/elevator/call:{jsonlib.dumps(data, sort_keys=True)}".encode()
+            ).hexdigest()
+            record = None
+            try:
+                maybe = manager.db.get_idempotency(idempotency_key)
+                if isinstance(maybe, dict):
+                    record = maybe
+            except Exception:
+                record = None
+            if record:
+                if record['request_hash'] == request_hash:
+                    stored = jsonlib.loads(record['response']) if record['response'] else {}
+                    return stored, int(record['status_code']), {'Idempotency-Key': idempotency_key}
+                else:
+                    raise ElevatorAPIException("Idempotency-Key reuse with different payload", 409)
             assignment = manager.assign_elevator(
                 from_floor=from_floor,
                 to_floor=to_floor,
@@ -122,16 +132,17 @@ class CallElevator(Resource):
             }
             status_code = 200
             # Persist idempotency result if key provided
-            if idempotency_key:
-                manager.db.put_idempotency(
-                    idempotency_key,
-                    "/elevator/call",
-                    "POST",
-                    request_hash,
-                    jsonlib.dumps(response_payload),
-                    status_code,
-                )
-            return response_payload, status_code
+            manager.db.put_idempotency(
+                idempotency_key,
+                "/elevator/call",
+                "POST",
+                request_hash,
+                jsonlib.dumps(response_payload),
+                status_code,
+            )
+            # Return the generated key so clients can learn/propagate it
+            response_payload["idempotency_key"] = idempotency_key
+            return response_payload, status_code, {'Idempotency-Key': idempotency_key}
             
         except NoAvailableElevatorException as e:
             raise ElevatorAPIException(str(e), 503)

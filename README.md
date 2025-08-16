@@ -94,9 +94,9 @@ Or update `app/config.py` defaults accordingly.
 ```bash
 curl -X POST http://localhost:5000/elevator/call \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: <your-key>" \
   -d '{"from_floor":1,"to_floor":5}'
 ```
+Response includes a generated `idempotency_key` header if you didn't provide one. Reuse the same key on retries to avoid duplicates.
 
 **Check system status:**
 ```bash

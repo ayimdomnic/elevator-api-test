@@ -3,7 +3,7 @@ Database module with connection pooling and query tracking.
 """
 import psycopg
 import psycopg_pool
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import contextmanager
 from typing import List, Dict, Any, Optional, Iterator, Callable
 import logging
@@ -282,6 +282,30 @@ class Database:
                     """,
                     (key, endpoint, method, request_hash, response, status_code),
                 )
+
+    def delete_idempotency(self, key: str) -> None:
+        """Delete an idempotency record by key."""
+        idem_table = f"idempotency_keys{self._table_suffix}"
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {idem_table} WHERE key = %s",
+                    (key,),
+                )
+
+    def purge_idempotency_older_than(self, seconds: int) -> int:
+        """Purge idempotency records older than given seconds. Returns rows deleted."""
+        idem_table = f"idempotency_keys{self._table_suffix}"
+        cutoff = datetime.now() - timedelta(seconds=seconds)
+        with self.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {idem_table} WHERE created_at < %s RETURNING 1",
+                    (cutoff,),
+                )
+                # cursor.rowcount may not be reliable across drivers; count returned rows
+                rows = cursor.fetchall() if hasattr(cursor, 'fetchall') else []
+                return len(rows)
 
     def get_logs(self, limit: int = 100, offset: int = 0, event_type: str = None) -> List[Dict[str, Any]]:
         """Get system logs with optional filtering."""

@@ -14,4 +14,4 @@ class Config:
         self.num_elevators = int(os.getenv("NUM_ELEVATORS", 5))
         self.floor_move_time = float(os.getenv("FLOOR_MOVE_TIME", 5.0))
         self.door_time = float(os.getenv("DOOR_TIME", 2.0))
-        self.database = os.getenv("DATABASE", "postgresql://postgres:postgres@localhost:5432/elevator_api")
+        self.database = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/elevator_api")

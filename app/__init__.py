@@ -45,7 +45,6 @@ def create_app():
     def _after_request(response):
         ctx = getattr(app, '_metrics_ctx', {'endpoint': 'unknown', 'method': 'GET'})
         request_counter.labels(ctx['endpoint'], ctx['method']).inc()
-        # Histogram observation would need precise timing; omitted for simplicity
         return response
 
     @app.route('/prom/metrics')

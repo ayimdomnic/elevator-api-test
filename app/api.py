@@ -67,12 +67,9 @@ def init_api(app: Flask, elevators: List, config, db) -> None:
     """Initialize the API with dependencies."""
     global manager
     manager = ElevatorManager(elevators, config, db)
-    # Ensure the database dependency is accessible directly for handlers/tests
     try:
         setattr(manager, 'db', db)
     except Exception:
-        # If manager is a MagicMock or similar, attribute setting will still succeed;
-        # this guard avoids any unexpected attribute errors in unusual cases.
         pass
     api.init_app(app)
 
@@ -94,10 +91,12 @@ class CallElevator(Resource):
         
         try:
             caller_id = request.headers.get('X-Request-ID', request.remote_addr)
+            idempotency_key = request.headers.get('Idempotency-Key')
             assignment = manager.assign_elevator(
                 from_floor=from_floor,
                 to_floor=to_floor,
-                caller_id=caller_id
+                caller_id=caller_id,
+                idempotency_key=idempotency_key
             )
             
             return {

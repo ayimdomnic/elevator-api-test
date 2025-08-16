@@ -38,7 +38,7 @@ class Elevator:
         self.destination_floor: Optional[int] = None
         self._lock = asyncio.Lock()
         
-        # Initialize in database
+        
         self.db.update_elevator(
             self.id, 
             self.current_floor,

@@ -1,5 +1,7 @@
 # Elevator Control System API (Beem Tech Challenge)
 
+![CI](https://github.com/ayimdomnic/elevator-api-test/actions/workflows/ci.yml/badge.svg)
+
 A production-ready REST API for intelligent, concurrent elevator management and real-time monitoring. Built for the Beem Tech Challenge with senior-level engineering practices: test coverage, observability, clear docs, and containerized setup.
 
 ## Table of Contents
@@ -10,6 +12,7 @@ A production-ready REST API for intelligent, concurrent elevator management and 
 - [Usage Examples](#usage-examples)
 - [Development](#development)
 - [Testing](#testing)
+- [CI/CD](#cicd)
 - [License](#license)
 
 ## Features
@@ -25,11 +28,11 @@ A production-ready REST API for intelligent, concurrent elevator management and 
 - Performance metrics
 
 ✅ **Reliable Operation**
-- Async movement for multiple elevators using background workers
-- Structured event logging to DB (events) and query auditing for every SQL statement
 - Thread-safe implementation
 - Comprehensive error handling
 - Database persistence
+- Async movement for multiple elevators using background workers
+- Structured event logging to DB (events) and query auditing for every SQL statement
 
 ## API Endpoints
 
@@ -41,10 +44,12 @@ A production-ready REST API for intelligent, concurrent elevator management and 
 | `/elevator/logs`      | GET    | Retrieve system event logs           |
 | `/elevator/task/{id}` | GET    | Check status of specific task        |
 
+Docs UI available at `/docs`.
+
 ### Health Monitoring
 | Endpoint            | Method | Description                |
 |---------------------|--------|----------------------------|
-| `/health`           | GET    | Service health check       |
+| `/health/health`    | GET    | Service health check       |
 | `/health/metrics`   | GET    | System performance metrics |
 
 ## Installation
@@ -88,12 +93,18 @@ Or update `app/config.py` defaults accordingly.
 ```bash
 curl -X POST http://localhost:5000/elevator/call \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: <your-key>" \
   -d '{"from_floor":1,"to_floor":5}'
 ```
 
 **Check system status:**
 ```bash
 curl http://localhost:5000/elevator/status
+```
+
+**Check task status:**
+```bash
+curl http://localhost:5000/elevator/task/<task_id>
 ```
 
 ## Development
@@ -136,6 +147,16 @@ Generate coverage report:
 ```bash
 pytest --cov=app tests/
 ```
+
+## CI/CD
+
+GitHub Actions workflow runs on every push and PR:
+- Installs dependencies
+- Runs unit tests
+- Starts Postgres service
+- Boots the app and performs a smoke check on `/health/health`
+
+See `.github/workflows/ci.yml` for details.
 
 ## Requirements Coverage (Beem)
 

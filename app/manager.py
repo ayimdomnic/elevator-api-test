@@ -35,6 +35,7 @@ class ElevatorManager:
         )
         self._assignment_lock = Lock()
         self._active_tasks: Dict[str, asyncio.Task] = {}
+        self._idempotency_cache: Dict[str, tuple[ElevatorAssignment, datetime]] = {}
         
         # Performance metrics
         self._metrics = {
@@ -46,7 +47,7 @@ class ElevatorManager:
         
         logger.info(f"Initialized with {len(elevators)} elevators")
 
-    def assign_elevator(self, from_floor: int, to_floor: int, caller_id: str) -> ElevatorAssignment:
+    def assign_elevator(self, from_floor: int, to_floor: int, caller_id: str, idempotency_key: Optional[str] = None) -> ElevatorAssignment:
         """Assign best elevator for the call."""
         start_time = datetime.now()
         
@@ -55,24 +56,26 @@ class ElevatorManager:
         
         with self._assignment_lock:
             try:
-                # Find best elevator
+                
+                if idempotency_key:
+                    self._evict_stale_idempotency_keys()
+                    cached = self._idempotency_cache.get(idempotency_key)
+                    if cached:
+                        return cached[0]
+                
                 elevator = self._find_best_elevator(from_floor, to_floor)
                 if not elevator:
                     raise NoAvailableElevatorException()
                 
-                # Update elevator state
                 elevator.state = ElevatorState.MOVING
                 elevator.direction = Direction.UP if to_floor > from_floor else Direction.DOWN
                 elevator.destination_floor = to_floor
                 self._update_elevator_in_db(elevator)
                 
-                # Calculate ETA
                 eta = self._calculate_arrival_time(elevator, from_floor)
                 
-                # Create task
                 task_id = f"elevator_{elevator.id}_{int(datetime.now().timestamp())}"
-                # Run the async call execution in a background thread with its own event loop
-                # Use a thunk to avoid creating a coroutine unless the task actually runs
+                
                 def _run_task():
                     asyncio.run(
                         self._execute_call(
@@ -87,11 +90,9 @@ class ElevatorManager:
                 future = self._executor.submit(_run_task)
                 self._active_tasks[task_id] = future
                 
-                # Update metrics
                 self._metrics["total_calls"] += 1
                 self._metrics["successful_assignments"] += 1
                 
-                # Log assignment
                 self.db.log_event(
                     "ELEVATOR_ASSIGNED",
                     f"Assigned elevator {elevator.id} for {from_floor}→{to_floor}",
@@ -108,6 +109,16 @@ class ElevatorManager:
                 self._metrics["failed_assignments"] += 1
                 logger.error(f"Assignment failed: {e}")
                 raise
+            finally:
+                
+                if 'task_id' in locals():
+                    assignment = ElevatorAssignment(
+                        elevator_id=elevator.id,
+                        task_id=task_id,
+                        estimated_arrival_time=eta
+                    )
+                    if idempotency_key:
+                        self._idempotency_cache[idempotency_key] = (assignment, datetime.now())
     
     def _update_elevator_in_db(self, elevator: Elevator):
         """Helper method to update elevator state in database."""
@@ -129,12 +140,10 @@ class ElevatorManager:
     
     def _find_best_elevator(self, from_floor: int, to_floor: int) -> Optional[Elevator]:
         """Find best elevator using intelligent algorithm."""
-        # First check idle elevators
         idle = [e for e in self.elevators if e.state == ElevatorState.IDLE]
         if idle:
             return min(idle, key=lambda e: abs(e.current_floor - from_floor))
         
-        # Then check moving elevators going same direction
         direction = Direction.UP if to_floor > from_floor else Direction.DOWN
         moving = [
             e for e in self.elevators 
@@ -156,33 +165,50 @@ class ElevatorManager:
         return False
     
     def _calculate_arrival_time(self, elevator: Elevator, pickup_floor: int) -> float:
-        """Calculate estimated arrival time."""
+        """Calculate estimated arrival time, including door operations.
+        Includes door open/close at pickup (if movement required) and at destination.
+        """
+        move_time = 0.0
         if elevator.state == ElevatorState.IDLE:
-            return abs(elevator.current_floor - pickup_floor) * self.config.floor_move_time
+            move_time = abs(elevator.current_floor - pickup_floor) * self.config.floor_move_time
         else:
-            # Time to complete current trip + time to pickup floor
+            
             current_trip = abs(elevator.current_floor - elevator.destination_floor)
             pickup_trip = abs(elevator.destination_floor - pickup_floor)
-            return (current_trip + pickup_trip) * self.config.floor_move_time
+            move_time = (current_trip + pickup_trip) * self.config.floor_move_time
+
+        door_time_total = 0.0
+        if elevator.current_floor != pickup_floor:
+            door_time_total += 2 * self.config.door_time  
+        door_time_total += 2 * self.config.door_time      
+        return move_time + door_time_total
+
+    def _evict_stale_idempotency_keys(self) -> None:
+        """Evict idempotency entries older than a TTL to bound memory."""
+        ttl_seconds = 600  
+        now = datetime.now()
+        keys_to_delete = [k for k, (_, created_at) in self._idempotency_cache.items() if (now - created_at).total_seconds() > ttl_seconds]
+        for k in keys_to_delete:
+            self._idempotency_cache.pop(k, None)
     
     async def _execute_call(self, elevator: Elevator, from_floor: int, 
                           to_floor: int, task_id: str, caller_id: str) -> None:
         """Execute the elevator call."""
         try:
-            # Move to pickup floor
+            
             if elevator.current_floor != from_floor:
                 await elevator.move_to(from_floor)
                 
-            # Move to destination
+           
             await elevator.move_to(to_floor)
             
-            # Update state after completion
+            
             elevator.state = ElevatorState.IDLE
             elevator.direction = Direction.NONE
             elevator.destination_floor = None
             self._update_elevator_in_db(elevator)
             
-            # Log completion
+           
             self.db.log_event(
                 "CALL_COMPLETED",
                 f"Completed call {from_floor}→{to_floor}",
@@ -191,7 +217,7 @@ class ElevatorManager:
             )
             
         except Exception as e:
-            # Update state on failure
+            
             elevator.state = ElevatorState.ERROR
             self._update_elevator_in_db(elevator)
             logger.error(f"Call failed: {e}")
@@ -218,7 +244,6 @@ class ElevatorManager:
                 "destination_floor": e.destination_floor
             })
         
-        # Determine system health
         busy_elevators = sum(1 for e in self.elevators if e.state != ElevatorState.IDLE)
         system_health = "BUSY" if busy_elevators == len(self.elevators) else "HEALTHY"
         

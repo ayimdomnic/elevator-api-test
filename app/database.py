@@ -17,12 +17,11 @@ class Database:
     def __init__(self, db_url: str, pool_size: int = 5, max_pool_size: int = 10):
         """Initialize database connection pool."""
         self.db_url = db_url
-        # Derive a table suffix from the database name to isolate environments (e.g. tests)
         self._table_suffix = ""
         try:
             db_name = db_url.rsplit('/', 1)[-1]
             if '_' in db_name:
-                # Use everything after the first underscore, e.g. elevator_api_test -> _api_test
+                
                 self._table_suffix = '_' + db_name.split('_', 1)[1]
         except Exception:
             self._table_suffix = ""
@@ -101,7 +100,7 @@ class Database:
         """Get a database connection with query tracking."""
         conn = self.pool.getconn()
         try:
-            # Store original cursor method
+
             original_cursor = conn.cursor
             
             def tracked_cursor(**kwargs):
@@ -109,7 +108,7 @@ class Database:
                 class TrackedCursor:
                     def __init__(self, cursor):
                         self._cursor = cursor
-                        self._db = self  # Will be set after creation
+                        self._db = self
                     
                     def __getattr__(self, name):
                         return getattr(self._cursor, name)
@@ -147,10 +146,9 @@ class Database:
                 
                 cursor = original_cursor(**kwargs)
                 wrapper = TrackedCursor(cursor)
-                wrapper._db = self  # Pass the Database instance to the wrapper
+                wrapper._db = self
                 return wrapper
             
-            # Replace cursor method with our tracked version
             conn.cursor = tracked_cursor
             
             yield conn
@@ -160,7 +158,7 @@ class Database:
             logger.error(f"Database operation failed: {e}")
             raise
         finally:
-            # Restore original cursor method before returning connection to pool
+
             if hasattr(conn, 'cursor') and callable(conn.cursor):
                 conn.cursor = original_cursor
             self.pool.putconn(conn)
@@ -295,7 +293,7 @@ class Database:
                 elevators = []
                 for row in cursor.fetchall():
                     elevator = dict(zip(columns, row))
-                    # Convert datetime to ISO format string
+                    
                     if 'last_updated' in elevator and isinstance(elevator['last_updated'], datetime):
                         elevator['last_updated'] = elevator['last_updated'].isoformat()
                     elevators.append(elevator)

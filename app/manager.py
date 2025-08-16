@@ -71,14 +71,20 @@ class ElevatorManager:
                 
                 # Create task
                 task_id = f"elevator_{elevator.id}_{int(datetime.now().timestamp())}"
-                future = self._executor.submit(
-                    self._execute_call,
-                    elevator,
-                    from_floor,
-                    to_floor,
-                    task_id,
-                    caller_id
-                )
+                # Run the async call execution in a background thread with its own event loop
+                # Use a thunk to avoid creating a coroutine unless the task actually runs
+                def _run_task():
+                    asyncio.run(
+                        self._execute_call(
+                            elevator,
+                            from_floor,
+                            to_floor,
+                            task_id,
+                            caller_id,
+                        )
+                    )
+
+                future = self._executor.submit(_run_task)
                 self._active_tasks[task_id] = future
                 
                 # Update metrics

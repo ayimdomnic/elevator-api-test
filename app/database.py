@@ -17,6 +17,15 @@ class Database:
     def __init__(self, db_url: str, pool_size: int = 5, max_pool_size: int = 10):
         """Initialize database connection pool."""
         self.db_url = db_url
+        # Derive a table suffix from the database name to isolate environments (e.g. tests)
+        self._table_suffix = ""
+        try:
+            db_name = db_url.rsplit('/', 1)[-1]
+            if '_' in db_name:
+                # Use everything after the first underscore, e.g. elevator_api_test -> _api_test
+                self._table_suffix = '_' + db_name.split('_', 1)[1]
+        except Exception:
+            self._table_suffix = ""
         try:
             self.pool = psycopg_pool.ConnectionPool(
                 db_url,
@@ -31,12 +40,17 @@ class Database:
             raise
 
     def _init_db(self) -> None:
-        """Initialize database schema with robust column creation."""
-        with self.pool.connection() as conn:
+        """Initialize database schema with environment-aware table names."""
+        elevators_table = f"elevators{self._table_suffix}"
+        logs_table = f"logs{self._table_suffix}"
+        sql_table = f"sql_queries{self._table_suffix}"
+
+        conn = self.pool.getconn()
+        try:
             with conn.cursor() as cursor:
-                # Create tables if they don't exist
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS elevators (
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {elevators_table} (
                         id INTEGER PRIMARY KEY,
                         current_floor INTEGER NOT NULL,
                         state TEXT NOT NULL,
@@ -46,39 +60,11 @@ class Database:
                         trips_completed INTEGER,
                         maintenance_mode BOOLEAN
                     )
-                """)
-                
-                # Ensure all columns exist with proper types
-                cursor.execute("""
-                    DO $$
-                    BEGIN
-                        -- Add missing columns with proper types
-                        BEGIN
-                            ALTER TABLE elevators ADD COLUMN IF NOT EXISTS last_updated TIMESTAMP;
-                        EXCEPTION WHEN duplicate_column THEN -- Do nothing
-                        END;
-                        
-                        BEGIN
-                            ALTER TABLE elevators ADD COLUMN IF NOT EXISTS trips_completed INTEGER DEFAULT 0;
-                        EXCEPTION WHEN duplicate_column THEN -- Do nothing
-                        END;
-                        
-                        BEGIN
-                            ALTER TABLE elevators ADD COLUMN IF NOT EXISTS maintenance_mode BOOLEAN DEFAULT FALSE;
-                        EXCEPTION WHEN duplicate_column THEN -- Do nothing
-                        END;
-                        
-                        -- Set default values for existing columns if needed
-                        BEGIN
-                            ALTER TABLE elevators ALTER COLUMN last_updated SET DEFAULT CURRENT_TIMESTAMP;
-                        EXCEPTION WHEN undefined_column THEN -- Do nothing
-                        END;
-                    END $$;
-                """)
-                
-                # Create other tables
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS logs (
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {logs_table} (
                         id SERIAL PRIMARY KEY,
                         elevator_id INTEGER,
                         event_type TEXT NOT NULL,
@@ -87,10 +73,11 @@ class Database:
                         source TEXT NOT NULL,
                         severity TEXT DEFAULT 'INFO'
                     )
-                """)
-                
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS sql_queries (
+                    """
+                )
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {sql_table} (
                         id SERIAL PRIMARY KEY,
                         query TEXT NOT NULL,
                         params TEXT,
@@ -100,8 +87,14 @@ class Database:
                         error TEXT,
                         timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
-                conn.commit()
+                    """
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self.pool.putconn(conn)
 
     @contextmanager
     def get_connection(self) -> Iterator[psycopg.Connection]:
@@ -176,22 +169,26 @@ class Database:
                   source: str, exec_time: float, error: str = None) -> None:
         """Log a SQL query to the database."""
         try:
+            sql_table = f"sql_queries{self._table_suffix}"
             with self.pool.connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("""
-                        INSERT INTO sql_queries (
+                    cursor.execute(
+                        f"""
+                        INSERT INTO {sql_table} (
                             query, params, operation, source, 
                             execution_time_ms, error, timestamp
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        query,
-                        str(params) if params else None,
-                        operation,
-                        source,
-                        exec_time,
-                        error,
-                        datetime.now()
-                    ))
+                        """,
+                        (
+                            query,
+                            str(params) if params else None,
+                            operation,
+                            source,
+                            exec_time,
+                            error,
+                            datetime.now()
+                        )
+                    )
         except Exception as e:
             logger.error(f"Failed to log query: {e}")
 
@@ -199,10 +196,12 @@ class Database:
                       state: str, direction: str, destination_floor: Optional[int],
                       trips_completed: int = 0, maintenance_mode: bool = False) -> None:
         """Update elevator state in database."""
+        elevators_table = f"elevators{self._table_suffix}"
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO elevators (
+                cursor.execute(
+                    f"""
+                    INSERT INTO {elevators_table} (
                         id, current_floor, state, direction, 
                         destination_floor, trips_completed, maintenance_mode,
                         last_updated
@@ -215,30 +214,42 @@ class Database:
                         trips_completed = EXCLUDED.trips_completed,
                         maintenance_mode = EXCLUDED.maintenance_mode,
                         last_updated = CURRENT_TIMESTAMP
-                """, (
-                    elevator_id, current_floor, state, direction, 
-                    destination_floor, trips_completed, maintenance_mode
-                ))
+                    """,
+                    (
+                        elevator_id,
+                        current_floor,
+                        state,
+                        direction,
+                        destination_floor,
+                        trips_completed,
+                        maintenance_mode,
+                    )
+                )
 
     def log_event(self, event_type: str, details: str, source: str, 
                  elevator_id: int = None, severity: str = "INFO") -> None:
         """Log an application event."""
+        logs_table = f"logs{self._table_suffix}"
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO logs (
+                cursor.execute(
+                    f"""
+                    INSERT INTO {logs_table} (
                         elevator_id, event_type, details, source, severity, timestamp
                     ) VALUES (%s, %s, %s, %s, %s, %s)
-                """, (elevator_id, event_type, details, source, severity, datetime.now()))
+                    """,
+                    (elevator_id, event_type, details, source, severity, datetime.now())
+                )
 
     def get_logs(self, limit: int = 100, offset: int = 0, event_type: str = None) -> List[Dict[str, Any]]:
         """Get system logs with optional filtering."""
+        logs_table = f"logs{self._table_suffix}"
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                query = """
+                query = f"""
                     SELECT id, elevator_id, event_type, details, 
                            timestamp, source, severity
-                    FROM logs
+                    FROM {logs_table}
                 """
                 params = []
                 
@@ -262,9 +273,11 @@ class Database:
 
     def get_elevator_status(self) -> List[Dict[str, Any]]:
         """Get current status of all elevators."""
+        elevators_table = f"elevators{self._table_suffix}"
         with self.get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("""
+                cursor.execute(
+                    f"""
                     SELECT 
                         id, 
                         current_floor, 
@@ -274,9 +287,10 @@ class Database:
                         last_updated,
                         trips_completed,
                         maintenance_mode
-                    FROM elevators 
+                    FROM {elevators_table} 
                     ORDER BY id
-                """)
+                    """
+                )
                 columns = [desc[0] for desc in cursor.description]
                 elevators = []
                 for row in cursor.fetchall():

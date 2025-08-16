@@ -98,3 +98,6 @@ Desktop.ini
 .env
 .flaskenv
 .env.local
+
+/calc_cov
+/coverage

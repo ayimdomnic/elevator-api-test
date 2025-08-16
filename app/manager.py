@@ -60,6 +60,12 @@ class ElevatorManager:
                 if not elevator:
                     raise NoAvailableElevatorException()
                 
+                # Update elevator state
+                elevator.state = ElevatorState.MOVING
+                elevator.direction = Direction.UP if to_floor > from_floor else Direction.DOWN
+                elevator.destination_floor = to_floor
+                self._update_elevator_in_db(elevator)
+                
                 # Calculate ETA
                 eta = self._calculate_arrival_time(elevator, from_floor)
                 
@@ -96,6 +102,16 @@ class ElevatorManager:
                 self._metrics["failed_assignments"] += 1
                 logger.error(f"Assignment failed: {e}")
                 raise
+    
+    def _update_elevator_in_db(self, elevator: Elevator):
+        """Helper method to update elevator state in database."""
+        self.db.update_elevator(
+            elevator.id,
+            elevator.current_floor,
+            elevator.state.name,
+            elevator.direction.name,
+            elevator.destination_floor
+        )
     
     def _validate_floors(self, from_floor: int, to_floor: int) -> None:
         """Validate floor numbers."""
@@ -154,6 +170,12 @@ class ElevatorManager:
             # Move to destination
             await elevator.move_to(to_floor)
             
+            # Update state after completion
+            elevator.state = ElevatorState.IDLE
+            elevator.direction = Direction.NONE
+            elevator.destination_floor = None
+            self._update_elevator_in_db(elevator)
+            
             # Log completion
             self.db.log_event(
                 "CALL_COMPLETED",
@@ -163,6 +185,9 @@ class ElevatorManager:
             )
             
         except Exception as e:
+            # Update state on failure
+            elevator.state = ElevatorState.ERROR
+            self._update_elevator_in_db(elevator)
             logger.error(f"Call failed: {e}")
             self.db.log_event(
                 "CALL_FAILED",

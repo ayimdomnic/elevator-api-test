@@ -101,3 +101,7 @@ Desktop.ini
 
 /calc_cov
 /coverage
+
+/**/*.pyc
+/node_modules/*
+/ui/node_modules/*
